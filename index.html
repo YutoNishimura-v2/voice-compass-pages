@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+<meta name="theme-color" content="#111715" />
+<meta name="robots" content="noindex,nofollow" />
+<link rel="icon" href="favicon.svg" />
+<link rel="apple-touch-icon" href="icon-192.png" />
+<link rel="manifest" href="loader.webmanifest" />
+<title>Voice Compass</title>
+<style>
+  :root { color-scheme: dark; }
+  body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: #111715; color: #eef3ec; font: 16px/1.7 system-ui, -apple-system, "Hiragino Sans", sans-serif; }
+  main { width: min(420px, calc(100% - 32px)); }
+  h1 { font-size: 20px; margin: 0 0 8px; }
+  p { color: #a1b7a8; font-size: 14px; margin: 8px 0; }
+  form { display: none; gap: 8px; margin-top: 16px; }
+  form.show { display: grid; }
+  input { font: inherit; padding: 10px 12px; border-radius: 8px; border: 1px solid #40594a; background: #132220; color: inherit; }
+  button { font: inherit; padding: 10px 12px; border-radius: 8px; border: 0; background: #b8f0c4; color: #10221a; font-weight: 600; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Voice Compass</h1>
+  <p id="status">準備しています…</p>
+  <form id="form">
+    <p>鍵つきリンク（#k= から後ろ）を貼り付けてください。ホーム画面から開いた場合は、ブラウザとは別に一度だけ必要です。</p>
+    <input id="key" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="#k=… またはリンク全体" />
+    <button>開く</button>
+  </form>
+</main>
+<script>
+// Stores the decryption key from the private link in this origin's IndexedDB and hands
+// over to the Service Worker, which decrypts the app (tools/pages/sw.js).
+const status = document.getElementById("status"), form = document.getElementById("form");
+const decode = text => { const b = atob(text.replace(/-/g, "+").replace(/_/g, "/")); return Uint8Array.from(b, c => c.charCodeAt(0)); };
+const keyFrom = text => { const m = /(?:^|[#&])k=([A-Za-z0-9_-]{43})/.exec(text.trim()) ?? /^([A-Za-z0-9_-]{43})$/.exec(text.trim()); return m ? decode(m[1]) : null; };
+function db(mode, run) {
+  return new Promise((resolve, reject) => {
+    const open = indexedDB.open("voice-compass-pages", 1);
+    open.onupgradeneeded = () => open.result.createObjectStore("keys");
+    open.onerror = () => reject(open.error);
+    open.onsuccess = () => { const store = open.result.transaction("keys", mode).objectStore("keys"), request = run(store); request.onsuccess = () => { open.result.close(); resolve(request.result); }; request.onerror = () => reject(request.error); };
+  });
+}
+async function controlled() {
+  if (!("serviceWorker" in navigator)) throw new Error("このブラウザは Service Worker に対応していません。");
+  await navigator.serviceWorker.register("sw.js", { scope: "./" });
+  await navigator.serviceWorker.ready;
+  if (!navigator.serviceWorker.controller) await new Promise(resolve => navigator.serviceWorker.addEventListener("controllerchange", resolve, { once: true }));
+}
+async function open() {
+  await controlled();
+  if (!(await db("readonly", s => s.get("k")))) { status.textContent = "このブラウザにはまだ鍵がありません。"; form.classList.add("show"); return; }
+  const probe = await fetch("app.html", { cache: "no-store" });
+  await probe.text();
+  if (!probe.ok) { status.textContent = "鍵が違うようです。正しい鍵つきリンクを貼り付けてください。"; form.classList.add("show"); return; }
+  location.replace("app.html");
+}
+async function remember(key) {
+  await db("readwrite", s => s.put(key, "k"));
+  navigator.serviceWorker.controller?.postMessage("key-changed");
+}
+form.addEventListener("submit", async event => {
+  event.preventDefault();
+  const key = keyFrom(document.getElementById("key").value);
+  if (!key) { status.textContent = "鍵の形が違います。リンク全体か、#k= の後ろを貼り付けてください。"; return; }
+  await remember(key); await open();
+});
+(async () => {
+  const key = keyFrom(location.hash);
+  history.replaceState(null, "", location.pathname);
+  if (key) { await controlled(); await remember(key); }
+  await open();
+})().catch(error => { status.textContent = `開けませんでした：${error.message}`; });
+</script>
+</body>
+</html>
